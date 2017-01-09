@@ -1,0 +1,292 @@
+buildscript {
+  repositories {
+    mavenLocal()
+    mavenCentral()
+    maven {
+      url "http://nexus.vevodev.com/content/repositories/releases/"
+    }
+  }
+  dependencies {
+    classpath group: 'com.vevo.genesis.deployer', name: 'genesisDeployerPlugin', version: '1.0.34'
+  }
+}
+
+plugins {
+  id 'groovy'
+  id 'jacoco'
+  id 'java'
+  id 'maven-publish'
+  id 'application'
+  id 'com.github.johnrengelman.shadow' version '1.2.3'
+  id 'org.sonarqube' version '2.1'
+}
+
+
+def jacocoReportPath = "$buildDir/jacoco/test.exec"
+def jacocoITReportPath = "$buildDir/jacoco/integrationTest.exec"
+
+sonarqube {
+  properties {
+    property "sonar.projectName", "Versions -- Follower Service"
+    property "sonar.projectKey", "com.vevo:versions"
+    property "sonar.jacoco.reportPath", jacocoReportPath
+    property "sonar.jacoco.itReportPath", jacocoITReportPath
+    property "sonar.host.url", "https://sonarqube.vevodev.com"
+
+    property "sonar.sources", "src/main/java"
+    property "sonar.tests", "src/test/java"
+
+    property "sonar.language", "java" // we are ignoring the .groovy mapper in quality metrics for the moment
+
+    property "sonar.github.oauth", "token"
+
+    if (System.env['SONARQUBE_TOKEN'] != null) {
+      property "sonar.login", System.env['SONARQUBE_TOKEN']
+    }
+  }
+}
+
+project.tasks['sonarqube'].dependsOn "integrationTest"
+
+repositories {
+  mavenLocal()
+  mavenCentral()
+  maven {
+    url "http://nexus.vevodev.com/content/repositories/releases/"
+  }
+}
+
+version = '1.0-SNAPSHOT'
+group = 'com.vevo.versions'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+def genesisVersion = '2.0.62'
+def genesisModulesVersion = '1.0.108'
+
+dependencies {
+  compile 'com.vevo.genesis:core:' + genesisVersion
+  compile 'com.vevo.genesis.module:mybatis:' + genesisVersion
+
+  compile 'com.vevo.genesis.module:tokens:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:liquibase:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:datadog:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:nfs-compliance:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:legacy:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:sentry:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:vevo-api:' + genesisModulesVersion
+  compile 'com.vevo.genesis.module:scarf:' + genesisModulesVersion
+
+
+  compile 'mysql:mysql-connector-java:5.1.38'
+  compile 'com.amazonaws:amazon-kinesis-client:1.6.2'
+  compile 'com.github.fge:json-schema-validator:2.2.6'
+  compile 'commons-io:commons-io:2.5'
+  compile 'com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.6.3'
+
+  testCompile 'com.vevo.genesis:test:' + genesisVersion
+  testCompile 'commons-io:commons-io:2.4'
+  testCompile 'com.mashape.unirest:unirest-java:1.4.9'
+  testCompile 'com.jayway.restassured:rest-assured:2.9.0'
+  testCompile 'junit:junit:4.12'
+  testCompile 'org.hamcrest:hamcrest-all:1.3'
+  testCompile "com.github.tomakehurst:wiremock:2.1.8"
+}
+
+// use the Groovy compiler for everything, even though we have things in discreet directories
+sourceSets {
+  main {
+    groovy {
+      srcDirs = ['src/main/java']
+    }
+    java {
+      srcDirs = [] // don't compile Java code twice
+    }
+  }
+
+  test {
+    java {
+      srcDirs = ['src/test/java']
+    }
+  }
+}
+
+//apply plugin: 'findbugs'
+test {
+  useTestNG() {
+    excludeGroups 'com.vevo.genesis.IntegrationTest.INTEGRATION_GROUP'
+  }
+
+  jacoco {
+    destinationFile = file(jacocoReportPath)
+    classDumpFile = file("$buildDir/classes/test")
+  }
+}
+
+task integrationTest(type: Test, dependsOn: 'test') {
+  useTestNG() {
+    includeGroups 'com.vevo.genesis.IntegrationTest.INTEGRATION_GROUP'
+  }
+
+  if (project.hasProperty('config')) {
+    systemProperty 'config', project.getProperty('config')
+  }
+
+  jacoco {
+    destinationFile = file(jacocoITReportPath)
+    classDumpFile = file("$buildDir/classes/integrationTest")
+  }
+}
+
+jacocoTestReport {
+  reports {
+    xml.enabled false
+    csv.enabled false
+    html.destination "${buildDir}/jacocoHtml"
+  }
+}
+
+mainClassName = 'com.vevo.versions.Service'
+
+run {
+  if (project.hasProperty('config')) {
+    args project.getProperty('config')
+  }
+}
+
+publishing {
+  publications {
+    mavenJava(MavenPublication) {
+      from components.java
+
+      artifact sourceJar
+    }
+    shadow(MavenPublication) {
+      from components.shadow
+      artifactId = 'versions-all'
+    }
+  }
+}
+
+task sourceJar(type: Jar) {
+  classifier "sources"
+}
+
+build {
+  dependsOn integrationTest
+  dependsOn publishToMavenLocal
+}
+
+apply plugin: 'com.vevo.genesis.deployer'
+
+deployerConfig {
+  projectName = "versions"
+  projectVersion = version
+  projectDisplayName = 'Versions'
+  productionUrl = 'https://versions.vevo.com'
+  stagingUrl = 'https://versions.vevostg.com'
+  devUrl = 'https://versions.vevodev.com'
+  rds = true
+}
+
+dockerfileConfig {
+  memMin = "1g"
+  memMax = "3g"
+}
+
+testComposeConfig {
+  envOverride = [
+    'ENVIRONMENT'          : 'test',
+    'SERVICE_PORT'         : '8888',
+    'API_REQUEST_THREADS'  : '20',
+    'API_REQUEST_TIMEOUT'  : '10',
+    'VEVO_API_URI'         : 'http://localhost:8890',
+    'VEVO_API_KEY'         : 'asdf',
+    'VEVO_API_SECRET'      : 'asdf',
+    'VEVO_API_TOKEN_URI'   : 'http://localhost:8890/token',
+    'DB_MAX_CONNECTIONS'   : '100',
+    'TOKENS_KEY'           : 'dc58957d82406c5cba9ea75a249783208728413cd57ea948a470b408c9a470b4',
+    'TOKENS_DERIVED_KEY'   : 'dc58957d82406c5cba9ea75a249783208728413cd57ea948a470b408c9a470b4',
+    'TOKENS_VALIDATION_KEY': 'dc58957d82406c5cba9ea75a249783208728413cd57ea948a470b408c9a470b4',
+    'AWS_KEY'              : 'asdf',
+    'AWS_SECRET'           : 'asdf',
+    'AWS_PRODUCER_THREADS' : '10',
+    'DATADOG_API_KEY'      : 'asdf',
+    'DATADOG_STATSD_HOST'  : 'asdf',
+    'CALL_TIME_THRESHOLD'  : '1000',
+    'USERS_SERVICE_URL'    : 'http://localhost:8890',
+    'NEEDS_CACHING_TIME_THRESHOLD': '100',
+    'NEEDS_CACHING_SIZE_THRESHOLD': '10000',
+  ]
+}
+
+
+stringerConfig {
+  main =
+    [
+      "service"              : "versions",
+      "tfstate"              : [
+        "key": "versions.tfstate"
+      ],
+      "environment_variables": [
+        "ENVIRONMENT"         : "default",
+        "SERVICE_PORT"        : 8888,
+        "API_REQUEST_THREADS" : 20,
+        "API_REQUEST_TIMEOUT" : 5,
+        "VEVO_API_URI"        : "https://apiv2.vevo.com",
+        "VEVO_API_TOKEN_URI"  : "https://accounts.vevo.com/token",
+        "DB_MAX_CONNECTIONS"  : 100,
+        "AWS_PRODUCER_THREADS": 10,
+        "DATADOG_PREFIX"      : "versions",
+        "DB_HOST"             : "default.host",
+        "DB_USER"             : "versions",
+        "DB_PORT"             : 3306,
+        "DB_NAME"             : "versions",
+        "CALL_TIME_THRESHOLD" : 3000,
+        "DATADOG_STATSD_HOST" : "dd-agent.kube-system",
+        "USERS_SERVICE_URL"   : "https://users.vevo.com",
+        "NEEDS_CACHING_TIME_THRESHOLD": "100",
+        "NEEDS_CACHING_SIZE_THRESHOLD": "100",
+      ],
+      "secrets"              : [
+        "VEVO_API_KEY",
+        "VEVO_API_SECRET",
+        "TOKENS_KEY",
+        "TOKENS_DERIVED_KEY",
+        "TOKENS_VALIDATION_KEY",
+        "AWS_KEY",
+        "AWS_SECRET",
+        "DATADOG_API_KEY",
+        "SENTRY_API_KEY",
+        "DB_PASSWORD"
+      ],
+    ]
+  dev =
+    [
+      "environment_variables": [
+        "CALL_TIME_THRESHOLD": "1000000",
+        "ENVIRONMENT"        : "development",
+        "DB_HOST"            : "versions.cluster-ch3njm1xbpvb.us-east-1.rds.amazonaws.com",
+        "USERS_SERVICE_URL"  : "https://o-stg-users.vevo.com",
+      ]
+    ]
+  stg =
+    [
+      "environment_variables": [
+        "CALL_TIME_THRESHOLD": "1000000",
+        "ENVIRONMENT"        : "staging",
+        "DB_HOST"            : "versions.cluster-cuifmhzgzrbw.us-east-1.rds.amazonaws.com",
+        "USERS_SERVICE_URL"  : "https://o-stg-users.vevo.com",
+      ]
+    ]
+  prd =
+    [
+      "environment_variables": [
+        "CALL_TIME_THRESHOLD": "1000",
+        "ENVIRONMENT"        : "production",
+        "DB_HOST"            : "versions.cluster-cevb8ynuaqbi.us-east-1.rds.amazonaws.com",
+        "USERS_SERVICE_URL"  : "https://users.vevo.com",
+      ]
+    ]
+}
